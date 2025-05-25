@@ -59,7 +59,8 @@ const unsigned long inactivityDelay = 10000;
 bool isBacklightOn = true;
 bool changeMode = false;
 bool confirmOldPassword = false;
-bool inputReady = false; // New flag to signal input submission
+bool inputReady = false;
+bool openDoorRequested = false; // New flag for openDoorTask
 String newPassword = "";
 int cnt = 0;
 
@@ -67,22 +68,23 @@ int cnt = 0;
 SemaphoreHandle_t lcdSemaphore;
 SemaphoreHandle_t spiSemaphore;
 SemaphoreHandle_t passwordSemaphore;
-
-// Function prototypes
-bool isValidUID(String uid);
-String normalizeUID(byte *buffer, byte size);
-void playBuzzerSound();
-void openLock();
-void enterLowPowerMode();
-void wakeUpFromLowPowerMode();
-void loadPasswordFromEEPROM();
-void savePasswordToEEPROM(String newPassword);
+SemaphoreHandle_t openDoorSemaphore; // New semaphore for openDoorTask
 
 // FreeRTOS task handles
 TaskHandle_t keypadTaskHandle = NULL;
 TaskHandle_t rfidTaskHandle = NULL;
 TaskHandle_t blynkTaskHandle = NULL;
 TaskHandle_t passwordChangeTaskHandle = NULL;
+TaskHandle_t openDoorTaskHandle = NULL; // New task handle
+
+// Function prototypes
+bool isValidUID(String uid);
+String normalizeUID(byte *buffer, byte size);
+void playBuzzerSound();
+void enterLowPowerMode();
+void wakeUpFromLowPowerMode();
+void loadPasswordFromEEPROM();
+void savePasswordToEEPROM(String newPassword);
 
 // Normalize UID
 String normalizeUID(byte *buffer, byte size) {
@@ -168,6 +170,72 @@ void wakeUpFromLowPowerMode() {
     }
 }
 
+// Open door task
+void openDoorTask(void *pvParameters) {
+    while (1) {
+        if (xSemaphoreTake(openDoorSemaphore, portMAX_DELAY) == pdTRUE) {
+            if (openDoorRequested) {
+                // Perform door opening sequence (formerly openLock)
+                if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
+                    lcd.clear();
+                    lcd.setCursor(0, 0);
+                    lcd.print("Mo khoa");
+                    xSemaphoreGive(lcdSemaphore);
+                }
+
+                Serial.println("Opening lock");
+                myservo.attach(15);
+                myservo.setPeriodHertz(50);
+                playBuzzerSound();
+
+                for (int pos = 0; pos <= 90; pos++) {
+                    myservo.write(pos);
+                    vTaskDelay(15 / portTICK_PERIOD_MS);
+                }
+
+                for (int i = 7; i >= 0; i--) {
+                    if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
+                        lcd.setCursor(15, 0);
+                        lcd.print(i);
+                        xSemaphoreGive(lcdSemaphore);
+                    }
+                    vTaskDelay(1000 / portTICK_PERIOD_MS);
+                }
+
+                playBuzzerSound();
+
+                if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
+                    lcd.clear();
+                    lcd.setCursor(0, 0);
+                    lcd.print("Dong cua");
+                    xSemaphoreGive(lcdSemaphore);
+                }
+
+                for (int pos = 90; pos >= 0; pos--) {
+                    myservo.write(pos);
+                    vTaskDelay(15 / portTICK_PERIOD_MS);
+                }
+
+                myservo.detach();
+                Serial.println("Lock closed.");
+
+                vTaskDelay(2000 / portTICK_PERIOD_MS);
+
+                if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
+                    lcd.clear();
+                    lcd.setCursor(0, 0);
+                    lcd.print("Nhap MK:");
+                    xSemaphoreGive(lcdSemaphore);
+                }
+
+                openDoorRequested = false; // Reset flag
+            }
+            xSemaphoreGive(openDoorSemaphore);
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
+
 // Blynk task
 void blynkTask(void *pvParameters) {
     while (1) {
@@ -176,64 +244,12 @@ void blynkTask(void *pvParameters) {
     }
 }
 
-// Open lock
-void openLock() {
-    if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("Mo khoa");
-        xSemaphoreGive(lcdSemaphore);
-    }
-
-    Serial.println("Opening lock");
-    myservo.attach(15);
-    myservo.setPeriodHertz(50);
-    playBuzzerSound();
-
-    for (int pos = 0; pos <= 90; pos++) {
-        myservo.write(pos);
-        vTaskDelay(15 / portTICK_PERIOD_MS);
-    }
-
-    for (int i = 7; i >= 0; i--) {
-        if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
-            lcd.setCursor(15, 0);
-            lcd.print(i);
-            xSemaphoreGive(lcdSemaphore);
-        }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-
-    playBuzzerSound();
-
-    if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("Dong cua");
-        xSemaphoreGive(lcdSemaphore);
-    }
-
-    for (int pos = 90; pos >= 0; pos--) {
-        myservo.write(pos);
-        vTaskDelay(15 / portTICK_PERIOD_MS);
-    }
-
-    myservo.detach();
-    Serial.println("Lock closed.");
-
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-
-    if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("Nhap MK:");
-        xSemaphoreGive(lcdSemaphore);
-    }
-}
-
 // Blynk write handlers
 BLYNK_WRITE(V2) {
-    openLock();
+    if (xSemaphoreTake(openDoorSemaphore, portMAX_DELAY) == pdTRUE) {
+        openDoorRequested = true;
+        xSemaphoreGive(openDoorSemaphore);
+    }
 }
 
 BLYNK_WRITE(V1) {
@@ -243,31 +259,22 @@ BLYNK_WRITE(V1) {
 
     if (pinValue == 1) {
         Serial.println("Door Opening By App...");
-        if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
-            lcd.clear();
-            lcd.setCursor(0, 0);
-            lcd.print("Mo khoa");
-            xSemaphoreGive(lcdSemaphore);
-        }
-
-        myservo.attach(15);
-        myservo.setPeriodHertz(50);
-        playBuzzerSound();
-
-        for (int pos = 0; pos <= 90; pos++) {
-            myservo.write(pos);
-            vTaskDelay(15 / portTICK_PERIOD_MS);
+        if (xSemaphoreTake(openDoorSemaphore, portMAX_DELAY) == pdTRUE) {
+            openDoorRequested = true;
+            xSemaphoreGive(openDoorSemaphore);
         }
     } else {
         Serial.println("Door Closing By App...");
-        playBuzzerSound();
-
         if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
             lcd.clear();
             lcd.setCursor(0, 0);
             lcd.print("Dong cua");
             xSemaphoreGive(lcdSemaphore);
         }
+
+        myservo.attach(15);
+        myservo.setPeriodHertz(50);
+        playBuzzerSound();
 
         for (int pos = 90; pos >= 0; pos--) {
             myservo.write(pos);
@@ -407,7 +414,10 @@ void keypadTask(void *pvParameters) {
                 if (xSemaphoreTake(passwordSemaphore, portMAX_DELAY) == pdTRUE) {
                     if (!changeMode) {
                         if (input.equals(password)) {
-                            openLock();
+                            if (xSemaphoreTake(openDoorSemaphore, portMAX_DELAY) == pdTRUE) {
+                                openDoorRequested = true;
+                                xSemaphoreGive(openDoorSemaphore);
+                            }
                         } else {
                             if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
                                 lcd.clear();
@@ -432,7 +442,6 @@ void keypadTask(void *pvParameters) {
                         }
                         input = "";
                     } else {
-                        // Signal passwordChangeTask to process input
                         inputReady = true;
                     }
                     xSemaphoreGive(passwordSemaphore);
@@ -477,7 +486,10 @@ void rfidTask(void *pvParameters) {
 
                     if (isValidUID(uid)) {
                         Serial.println("UID hợp lệ. Mở khóa.");
-                        openLock();
+                        if (xSemaphoreTake(openDoorSemaphore, portMAX_DELAY) == pdTRUE) {
+                            openDoorRequested = true;
+                            xSemaphoreGive(openDoorSemaphore);
+                        }
                     } else {
                         Serial.println("UID không hợp lệ.");
                         if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
@@ -536,10 +548,12 @@ void setup() {
     lcdSemaphore = xSemaphoreCreateBinary();
     spiSemaphore = xSemaphoreCreateBinary();
     passwordSemaphore = xSemaphoreCreateBinary();
-    if (lcdSemaphore != NULL && spiSemaphore != NULL && passwordSemaphore != NULL) {
+    openDoorSemaphore = xSemaphoreCreateBinary(); // Initialize new semaphore
+    if (lcdSemaphore != NULL && spiSemaphore != NULL && passwordSemaphore != NULL && openDoorSemaphore != NULL) {
         xSemaphoreGive(lcdSemaphore);
         xSemaphoreGive(spiSemaphore);
         xSemaphoreGive(passwordSemaphore);
+        xSemaphoreGive(openDoorSemaphore);
     }
 
     if (xSemaphoreTake(lcdSemaphore, portMAX_DELAY) == pdTRUE) {
@@ -550,10 +564,11 @@ void setup() {
         xSemaphoreGive(lcdSemaphore);
     }
 
-    xTaskCreatePinnedToCore(keypadTask, "KeypadTask", 4096, NULL, 2, &keypadTaskHandle, 1);
-    xTaskCreatePinnedToCore(rfidTask, "RFIDTask", 4096, NULL, 3, &rfidTaskHandle, 0);
-    xTaskCreatePinnedToCore(blynkTask, "BlynkTask", 4096, NULL, 1, &blynkTaskHandle, 1);
+    xTaskCreatePinnedToCore(keypadTask, "KeypadTask", 4096, NULL, 3, &keypadTaskHandle, 1);
+    xTaskCreatePinnedToCore(rfidTask, "RFIDTask", 4096, NULL, 3, &rfidTaskHandle, 1);
+    xTaskCreatePinnedToCore(blynkTask, "BlynkTask", 4096, NULL, 3, &blynkTaskHandle, 1);
     xTaskCreatePinnedToCore(passwordChangeTask, "PasswordChangeTask", 4096, NULL, 2, &passwordChangeTaskHandle, 1);
+    xTaskCreatePinnedToCore(openDoorTask, "OpenDoorTask", 4096, NULL, 2, &openDoorTaskHandle, 1);
 }
 
 void loop() {
